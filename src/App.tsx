@@ -40,6 +40,7 @@ export default function App() {
 
   const gridWrapperRef = useRef<HTMLDivElement | null>(null);
   const cellRefs = useRef(new Map<string, HTMLDivElement>());
+  const editStartInputStrRef = useRef<string>(inputStr);
   const [overlayBox, setOverlayBox] = useState({ width: 0, height: 0 });
   const [cellCenters, setCellCenters] = useState<Map<string, { x: number; y: number }>>(new Map());
 
@@ -279,8 +280,14 @@ export default function App() {
                  <button 
                   onClick={() => {
                     const next = !isEditing;
-                    setIsEditing(next);
-                    if (next) clearTransientSelection();
+                    if (next) {
+                      editStartInputStrRef.current = inputStr;
+                      clearTransientSelection();
+                      setIsEditing(true);
+                      return;
+                    }
+                    if (inputStr !== editStartInputStrRef.current) resetGame();
+                    setIsEditing(false);
                   }}
                    className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm font-medium transition"
                  >
