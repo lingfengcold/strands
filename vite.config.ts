@@ -15,8 +15,11 @@ export default defineConfig(({ mode }) => ({
       ? (() => {
           const explicit = process.env.VITE_BASE ?? process.env.BASE_URL;
           if (explicit) return explicit;
-          const repo = process.env.GITHUB_REPOSITORY?.split("/")?.[1];
-          if (repo) return `/${repo}/`;
+          const [owner, repo] = process.env.GITHUB_REPOSITORY?.split("/") ?? [];
+          if (repo) {
+            if (repo.endsWith(".github.io") && owner && repo.startsWith(owner)) return "/";
+            return `/${repo}/`;
+          }
           return "/";
         })()
       : "/",
