@@ -37,13 +37,9 @@ export default function App() {
   const [lastSelected, setLastSelected] = useState<Coordinate | null>(null);
   const [highlightedPath, setHighlightedPath] = useState<Coordinate[]>([]);
   const [hoveredWord, setHoveredWord] = useState<FoundWord | null>(null);
-  const [activePointerId, setActivePointerId] = useState<number | null>(null);
 
   const gridWrapperRef = useRef<HTMLDivElement | null>(null);
   const cellRefs = useRef(new Map<string, HTMLDivElement>());
-  const isDraggingRef = useRef(false);
-  const lastSelectedRef = useRef<Coordinate | null>(null);
-  const selectedCellsRef = useRef<Coordinate[]>([]);
   const [overlayBox, setOverlayBox] = useState({ width: 0, height: 0 });
   const [cellCenters, setCellCenters] = useState<Map<string, { x: number; y: number }>>(new Map());
 
@@ -169,117 +165,68 @@ export default function App() {
     return points.map(p => `${p.x},${p.y}`).join(' ');
   };
 
-  useEffect(() => {
-    isDraggingRef.current = isDragging;
-  }, [isDragging]);
-
-  useEffect(() => {
-    lastSelectedRef.current = lastSelected;
-  }, [lastSelected]);
-
-  useEffect(() => {
-    selectedCellsRef.current = selectedCells;
-  }, [selectedCells]);
-
-  const beginSelection = (r: number, c: number) => {
+  const handleMouseDown = (r: number, c: number) => {
     if (isEditing) return;
     if (usedCells.has(getCellId(r, c))) return;
-
+    
     setIsDragging(true);
-    isDraggingRef.current = true;
-
-    const initial = [{ row: r, col: c }];
-    selectedCellsRef.current = initial;
-    lastSelectedRef.current = { row: r, col: c };
-    setSelectedCells(initial);
+    setSelectedCells([{ row: r, col: c }]);
     setLastSelected({ row: r, col: c });
   };
 
-  const extendSelection = (r: number, c: number) => {
-    if (!isDraggingRef.current || isEditing) return;
+  const handleMouseEnter = (r: number, c: number) => {
+    if (!isDragging || isEditing) return;
     if (usedCells.has(getCellId(r, c))) return;
 
-    const last = lastSelectedRef.current;
-    if (!last) return;
+    // Check adjacency
+    if (lastSelected) {
+      const dr = Math.abs(r - lastSelected.row);
+      const dc = Math.abs(c - lastSelected.col);
+      if (dr <= 1 && dc <= 1 && (dr !== 0 || dc !== 0)) {
+        // Check if already in path (backtracking handling?)
+        // If re-entering the immediately previous cell, undo selection (pop)
+        if (selectedCells.length > 1) {
+            const prev = selectedCells[selectedCells.length - 2];
+            if (prev.row === r && prev.col === c) {
+                const newSelection = selectedCells.slice(0, -1);
+                setSelectedCells(newSelection);
+                setLastSelected(prev);
+                return;
+            }
+        }
 
-    const dr = Math.abs(r - last.row);
-    const dc = Math.abs(c - last.col);
-    if (dr > 1 || dc > 1 || (dr === 0 && dc === 0)) return;
-
-    const current = selectedCellsRef.current;
-
-    if (current.length > 1) {
-      const prev = current[current.length - 2];
-      if (prev.row === r && prev.col === c) {
-        const nextSelection = current.slice(0, -1);
-        selectedCellsRef.current = nextSelection;
-        lastSelectedRef.current = prev;
-        setSelectedCells(nextSelection);
-        setLastSelected(prev);
-        return;
+        // If not visited in current selection
+        if (!selectedCells.some(cell => cell.row === r && cell.col === c)) {
+          setSelectedCells([...selectedCells, { row: r, col: c }]);
+          setLastSelected({ row: r, col: c });
+        }
       }
     }
-
-    if (current.some(cell => cell.row === r && cell.col === c)) return;
-    const nextSelection = [...current, { row: r, col: c }];
-    selectedCellsRef.current = nextSelection;
-    lastSelectedRef.current = { row: r, col: c };
-    setSelectedCells(nextSelection);
-    setLastSelected({ row: r, col: c });
   };
 
-  const finalizeSelection = () => {
+  const handleMouseUp = () => {
     if (isEditing) return;
     setIsDragging(false);
-    isDraggingRef.current = false;
-
-    const path = selectedCellsRef.current;
-    const word = path.map(p => grid[p.row][p.col]).join('');
+    
+    // Check if word is valid
+    const word = selectedCells.map(p => grid[p.row][p.col]).join('');
+    // Check if it's in the foundWords list (or just valid in dictionary?)
+    // Strands usually requires it to be one of the theme words, but here we accept any valid dictionary word?
+    // The prompt says: "When I get a correct answer...". 
+    // Let's assume if it is in the foundWords list, it's correct.
+    
     const isValid = foundWords.some(fw => fw.word === word);
-
+    // Alternatively, check dictionary directly if we want to allow words not found by solver (unlikely if solver is complete)
+    
     if (isValid) {
       const newUsed = new Set(usedCells);
-      path.forEach(p => newUsed.add(getCellId(p.row, p.col)));
+      selectedCells.forEach(p => newUsed.add(getCellId(p.row, p.col)));
       setUsedCells(newUsed);
-      setFoundSelections(prev => [...prev, { word, path, color: getStepColor(prev.length) }]);
+      setFoundSelections(prev => [...prev, { word, path: selectedCells, color: getStepColor(prev.length) }]);
     }
-
-    selectedCellsRef.current = [];
-    lastSelectedRef.current = null;
+    
     setSelectedCells([]);
     setLastSelected(null);
-  };
-
-  const handlePointerDownCell = (e: React.PointerEvent<HTMLDivElement>, r: number, c: number) => {
-    if (isEditing) return;
-    setHighlightedPath([]);
-    setHoveredWord(null);
-
-    setActivePointerId(e.pointerId);
-    e.currentTarget.setPointerCapture(e.pointerId);
-    beginSelection(r, c);
-    e.preventDefault();
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activePointerId === null || e.pointerId !== activePointerId) return;
-    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-    const cellEl = el?.closest<HTMLElement>('[data-cellid]');
-    const cellId = cellEl?.dataset.cellid;
-    if (!cellId) return;
-    const [rs, cs] = cellId.split(',');
-    const r = Number(rs);
-    const c = Number(cs);
-    if (Number.isNaN(r) || Number.isNaN(c)) return;
-    extendSelection(r, c);
-    e.preventDefault();
-  };
-
-  const handlePointerUpOrCancel = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activePointerId === null || e.pointerId !== activePointerId) return;
-    setActivePointerId(null);
-    finalizeSelection();
-    e.preventDefault();
   };
   
   // Also support clicking a word in the list to "find" it automatically?
@@ -301,13 +248,9 @@ export default function App() {
   };
 
   const clearTransientSelection = () => {
-    setActivePointerId(null);
     setIsDragging(false);
-    isDraggingRef.current = false;
     setSelectedCells([]);
-    selectedCellsRef.current = [];
     setLastSelected(null);
-    lastSelectedRef.current = null;
     setHighlightedPath([]);
     setHoveredWord(null);
   };
@@ -319,7 +262,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-8 font-sans text-gray-900">
+    <div className="min-h-screen bg-gray-100 p-8 font-sans text-gray-900" onMouseUp={handleMouseUp}>
       <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
         
         {/* Left Column: Controls & Grid */}
@@ -363,7 +306,7 @@ export default function App() {
               />
             ) : (
               <div className="flex justify-center">
-                <div ref={gridWrapperRef} className="relative" style={{ touchAction: 'none' }}>
+                <div ref={gridWrapperRef} className="relative">
                   <div
                     className="grid gap-2 select-none"
                     style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
@@ -472,15 +415,12 @@ export default function App() {
                         return (
                           <div
                             key={id}
-                            data-cellid={id}
                             ref={el => {
                               if (el) cellRefs.current.set(id, el);
                               else cellRefs.current.delete(id);
                             }}
-                            onPointerDown={e => handlePointerDownCell(e, r, c)}
-                            onPointerMove={handlePointerMove}
-                            onPointerUp={handlePointerUpOrCancel}
-                            onPointerCancel={handlePointerUpOrCancel}
+                            onMouseDown={() => handleMouseDown(r, c)}
+                            onMouseEnter={() => handleMouseEnter(r, c)}
                             className={cn(
                               "w-12 h-12 flex items-center justify-center text-xl font-bold rounded-full transition-all cursor-pointer relative border-2 border-transparent",
                               !isUsed && "hover:border-blue-300",
