@@ -1,10 +1,23 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { Trie } from './lib/trie';
 import { solveGrid, FoundWord, Coordinate } from './lib/solver';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 const cn = (...inputs: (string | undefined | null | false)[]) => twMerge(clsx(inputs));
+
+type ColoredWord = { word: string; path: Coordinate[]; color: string };
+
+const STEP_COLORS = [
+  '#ef4444',
+  '#3b82f6',
+  '#10b981',
+  '#f59e0b',
+  '#a855f7',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+];
 
 export default function App() {
   const [dictionaryLoaded, setDictionaryLoaded] = useState(false);
@@ -18,10 +31,18 @@ export default function App() {
   // Game State
   const [foundWords, setFoundWords] = useState<FoundWord[]>([]);
   const [usedCells, setUsedCells] = useState<Set<string>>(new Set());
+  const [foundSelections, setFoundSelections] = useState<ColoredWord[]>([]);
   const [selectedCells, setSelectedCells] = useState<Coordinate[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [lastSelected, setLastSelected] = useState<Coordinate | null>(null);
   const [highlightedPath, setHighlightedPath] = useState<Coordinate[]>([]);
+  const [hoveredWord, setHoveredWord] = useState<FoundWord | null>(null);
+
+  const gridWrapperRef = useRef<HTMLDivElement | null>(null);
+  const cellRefs = useRef(new Map<string, HTMLDivElement>());
+  const editStartInputStrRef = useRef<string>(inputStr);
+  const [overlayBox, setOverlayBox] = useState({ width: 0, height: 0 });
+  const [cellCenters, setCellCenters] = useState<Map<string, { x: number; y: number }>>(new Map());
 
   // Load Dictionary
   useEffect(() => {
@@ -32,7 +53,7 @@ export default function App() {
           'https://raw.githubusercontent.com/dolph/dictionary/master/enable1.txt'
         ];
         
-        const responses = await Promise.all(urls.map(url => fetch(url).catch(_ => null))); // Try both, ignore failures if one succeeds
+        const responses = await Promise.all(urls.map(url => fetch(url).catch(() => null))); // Try both, ignore failures if one succeeds
         
         const t = new Trie();
         let loadedAny = false;
@@ -77,8 +98,10 @@ export default function App() {
 
   const cols = grid[0]?.length || 0;
 
+  const getStepColor = (stepIndex: number) => STEP_COLORS[stepIndex % STEP_COLORS.length];
+
   // Solver
-  const runSolver = () => {
+  const runSolver = useCallback(() => {
     if (!trie) return;
     // Create a temporary grid that respects usedCells
     const tempGrid = grid.map((row, r) => row.map((char, c) => {
@@ -88,16 +111,60 @@ export default function App() {
 
     const results = solveGrid(tempGrid, trie);
     setFoundWords(results);
-  };
+  }, [grid, trie, usedCells]);
 
   useEffect(() => {
     if (!isEditing && dictionaryLoaded) {
       runSolver();
     }
-  }, [isEditing, dictionaryLoaded, usedCells]);
+  }, [dictionaryLoaded, isEditing, runSolver]);
 
   // Interaction
   const getCellId = (r: number, c: number) => `${r},${c}`;
+
+  const currentSelectionColor = getStepColor(foundSelections.length);
+  const getFoundSelectionColor = (word: string) => foundSelections.find(s => s.word === word)?.color;
+  const hoveredWordColor = hoveredWord ? (getFoundSelectionColor(hoveredWord.word) ?? currentSelectionColor) : null;
+
+  useEffect(() => {
+    if (isEditing) return;
+    const wrapper = gridWrapperRef.current;
+    if (!wrapper) return;
+
+    const update = () => {
+      const wrapperRect = wrapper.getBoundingClientRect();
+      setOverlayBox({ width: wrapperRect.width, height: wrapperRect.height });
+
+      const nextCenters = new Map<string, { x: number; y: number }>();
+      for (const [id, el] of cellRefs.current.entries()) {
+        const r = el.getBoundingClientRect();
+        nextCenters.set(id, {
+          x: r.left - wrapperRect.left + r.width / 2,
+          y: r.top - wrapperRect.top + r.height / 2,
+        });
+      }
+      setCellCenters(nextCenters);
+    };
+
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(wrapper);
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [isEditing, cols, grid.length, usedCells.size, foundSelections.length]);
+
+  const pathToPolyline = (path: Coordinate[]) => {
+    const points = path
+      .map(p => cellCenters.get(getCellId(p.row, p.col)))
+      .filter((p): p is { x: number; y: number } => Boolean(p));
+    if (points.length < 2) return null;
+    return points.map(p => `${p.x},${p.y}`).join(' ');
+  };
 
   const handleMouseDown = (r: number, c: number) => {
     if (isEditing) return;
@@ -153,9 +220,10 @@ export default function App() {
     // Alternatively, check dictionary directly if we want to allow words not found by solver (unlikely if solver is complete)
     
     if (isValid) {
-        const newUsed = new Set(usedCells);
-        selectedCells.forEach(p => newUsed.add(getCellId(p.row, p.col)));
-        setUsedCells(newUsed);
+      const newUsed = new Set(usedCells);
+      selectedCells.forEach(p => newUsed.add(getCellId(p.row, p.col)));
+      setUsedCells(newUsed);
+      setFoundSelections(prev => [...prev, { word, path: selectedCells, color: getStepColor(prev.length) }]);
     }
     
     setSelectedCells([]);
@@ -165,19 +233,33 @@ export default function App() {
   // Also support clicking a word in the list to "find" it automatically?
   // "give possible words...". Maybe clicking them highlights them?
   const highlightWord = (fw: FoundWord) => {
+      setHighlightedPath([]);
+      setHoveredWord(null);
+      if (foundSelections.some(s => s.word === fw.word)) return;
       // Check if path is available
       const available = fw.path.every(p => !usedCells.has(getCellId(p.row, p.col)));
       if (available) {
           const newUsed = new Set(usedCells);
           fw.path.forEach(p => newUsed.add(getCellId(p.row, p.col)));
           setUsedCells(newUsed);
+          setFoundSelections(prev => [...prev, { word: fw.word, path: fw.path, color: getStepColor(prev.length) }]);
       } else {
           alert("This word overlaps with already found words.");
       }
   };
 
+  const clearTransientSelection = () => {
+    setIsDragging(false);
+    setSelectedCells([]);
+    setLastSelected(null);
+    setHighlightedPath([]);
+    setHoveredWord(null);
+  };
+
   const resetGame = () => {
       setUsedCells(new Set());
+      setFoundSelections([]);
+      clearTransientSelection();
   };
 
   return (
@@ -196,7 +278,17 @@ export default function App() {
                <h2 className="text-xl font-semibold">Grid</h2>
                <div className="space-x-2">
                  <button 
-                   onClick={() => setIsEditing(!isEditing)}
+                  onClick={() => {
+                    const next = !isEditing;
+                    if (next) {
+                      editStartInputStrRef.current = inputStr;
+                      clearTransientSelection();
+                      setIsEditing(true);
+                      return;
+                    }
+                    if (inputStr !== editStartInputStrRef.current) resetGame();
+                    setIsEditing(false);
+                  }}
                    className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm font-medium transition"
                  >
                    {isEditing ? "Done" : "Edit Grid"}
@@ -220,35 +312,137 @@ export default function App() {
                 placeholder="Enter letters separated by spaces or newlines..."
               />
             ) : (
-              <div 
-                className="grid gap-2 select-none justify-center"
-                style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
-              >
-                {grid.map((row, r) => (
-                  row.map((char, c) => {
-                    const id = getCellId(r, c);
-                    const isUsed = usedCells.has(id);
-                    const isSelected = selectedCells.some(p => p.row === r && p.col === c);
-                    const isHighlighted = highlightedPath.some(p => p.row === r && p.col === c);
-                    
-                    return (
-                      <div
-                        key={id}
-                        onMouseDown={() => handleMouseDown(r, c)}
-                        onMouseEnter={() => handleMouseEnter(r, c)}
-                        className={cn(
-                          "w-12 h-12 flex items-center justify-center text-xl font-bold rounded-full transition-all cursor-pointer border-2 relative",
-                          isUsed ? "bg-gray-100 text-gray-300 border-gray-100" : "bg-white text-gray-800 border-gray-200 hover:border-blue-300",
-                          isSelected && "bg-blue-500 text-white border-blue-500 scale-110 shadow-lg z-20",
-                          !isSelected && isHighlighted && "bg-yellow-100 border-yellow-300 text-yellow-800 scale-105 z-10",
-                          !isUsed && !isSelected && !isHighlighted && "hover:bg-blue-50"
-                        )}
-                      >
-                        {char}
-                      </div>
-                    );
-                  })
-                ))}
+              <div className="flex justify-center">
+                <div ref={gridWrapperRef} className="relative">
+                  <div
+                    className="grid gap-2 select-none"
+                    style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                  >
+                    {grid.map((row, r) => (
+                      row.map((char, c) => {
+                        void char;
+                        const id = getCellId(r, c);
+                        const isUsed = usedCells.has(id);
+                        const isSelected = selectedCells.some(p => p.row === r && p.col === c);
+                        const isHighlighted = highlightedPath.some(p => p.row === r && p.col === c);
+
+                        return (
+                          <div
+                            key={id}
+                            className={cn(
+                              "w-12 h-12 rounded-full transition-all border-2 relative",
+                              isUsed
+                                ? "bg-gray-100 border-gray-100"
+                                : "bg-white border-gray-200",
+                              isSelected && "scale-110 shadow-lg z-20",
+                              !isSelected && isHighlighted && "bg-yellow-100 border-yellow-300 scale-105 z-10"
+                            )}
+                            style={
+                              isSelected
+                                ? { backgroundColor: currentSelectionColor, borderColor: currentSelectionColor }
+                                : undefined
+                            }
+                          >
+                          </div>
+                        );
+                      })
+                    ))}
+                  </div>
+
+                  <svg
+                    className="absolute inset-0 pointer-events-none z-10"
+                    width={overlayBox.width}
+                    height={overlayBox.height}
+                    viewBox={`0 0 ${overlayBox.width} ${overlayBox.height}`}
+                  >
+                    {foundSelections.map((s, idx) => {
+                      const points = pathToPolyline(s.path);
+                      if (!points) return null;
+                      return (
+                        <polyline
+                          key={`${s.word}-${idx}`}
+                          points={points}
+                          fill="none"
+                          stroke={s.color}
+                          strokeWidth={6}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          opacity={0.5}
+                        />
+                      );
+                    })}
+                    {hoveredWord && hoveredWordColor && (
+                      (() => {
+                        const points = pathToPolyline(hoveredWord.path);
+                        if (!points) return null;
+                        return (
+                          <polyline
+                            points={points}
+                            fill="none"
+                            stroke={hoveredWordColor}
+                            strokeWidth={6}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeDasharray="10 8"
+                            opacity={0.5}
+                          />
+                        );
+                      })()
+                    )}
+                    {selectedCells.length > 1 && (
+                      (() => {
+                        const points = pathToPolyline(selectedCells);
+                        if (!points) return null;
+                        return (
+                          <polyline
+                            points={points}
+                            fill="none"
+                            stroke={currentSelectionColor}
+                            strokeWidth={8}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={0.5}
+                          />
+                        );
+                      })()
+                    )}
+                  </svg>
+
+                  <div
+                    className="absolute inset-0 grid gap-2 select-none z-20"
+                    style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                  >
+                    {grid.map((row, r) => (
+                      row.map((char, c) => {
+                        const id = getCellId(r, c);
+                        const isUsed = usedCells.has(id);
+                        const isSelected = selectedCells.some(p => p.row === r && p.col === c);
+                        const isHighlighted = highlightedPath.some(p => p.row === r && p.col === c);
+
+                        return (
+                          <div
+                            key={id}
+                            ref={el => {
+                              if (el) cellRefs.current.set(id, el);
+                              else cellRefs.current.delete(id);
+                            }}
+                            onMouseDown={() => handleMouseDown(r, c)}
+                            onMouseEnter={() => handleMouseEnter(r, c)}
+                            className={cn(
+                              "w-12 h-12 flex items-center justify-center text-xl font-bold rounded-full transition-all cursor-pointer relative border-2 border-transparent",
+                              !isUsed && "hover:border-blue-300",
+                              isUsed ? "text-gray-300" : "text-gray-800",
+                              isSelected && "text-white scale-110 z-20",
+                              !isSelected && isHighlighted && "text-yellow-800 scale-105 z-10"
+                            )}
+                          >
+                            {char}
+                          </div>
+                        );
+                      })
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -271,19 +465,42 @@ export default function App() {
                <p className="text-gray-500 italic">No words found yet.</p>
            ) : (
                <ul className="space-y-2">
-                   {foundWords.map((fw, idx) => (
-                       <li key={idx} 
-                           className="group flex items-center justify-between p-2 hover:bg-gray-50 rounded cursor-pointer border border-transparent hover:border-gray-200 transition"
-                           onClick={() => highlightWord(fw)}
-                           onMouseEnter={() => setHighlightedPath(fw.path)}
-                           onMouseLeave={() => setHighlightedPath([])}
+                   {foundWords.map((fw, idx) => {
+                     const foundColor = getFoundSelectionColor(fw.word);
+                     return (
+                       <li
+                         key={idx}
+                         className={cn(
+                           "group flex items-center justify-between p-2 hover:bg-gray-50 rounded cursor-pointer border border-transparent hover:border-gray-200 transition",
+                           foundColor && "border"
+                         )}
+                         style={foundColor ? { borderColor: foundColor } : undefined}
+                         onClick={() => highlightWord(fw)}
+                         onMouseEnter={() => {
+                           setHighlightedPath(fw.path);
+                           setHoveredWord(fw);
+                         }}
+                         onMouseLeave={() => {
+                           setHighlightedPath([]);
+                           setHoveredWord(null);
+                         }}
                        >
+                         <span className="flex items-center gap-2">
+                           <span
+                             className={cn(
+                               "w-2.5 h-2.5 rounded-full border",
+                               foundColor ? "border-transparent" : "border-gray-300"
+                             )}
+                             style={foundColor ? { backgroundColor: foundColor } : undefined}
+                           />
                            <span className="font-mono font-medium text-lg text-gray-700">{fw.word}</span>
-                           <span className="text-xs text-gray-400 font-mono bg-gray-100 px-2 py-1 rounded">
-                               {fw.word.length} pts
-                           </span>
+                         </span>
+                         <span className="text-xs text-gray-400 font-mono bg-gray-100 px-2 py-1 rounded">
+                           {fw.word.length} pts
+                         </span>
                        </li>
-                   ))}
+                     );
+                   })}
                </ul>
            )}
         </div>
