@@ -356,6 +356,11 @@ export default function App() {
                         return (
                           <div
                             key={id}
+                            data-cell="true"
+                            data-row={r}
+                            data-col={c}
+                            onMouseDown={() => handleMouseDown(r, c)}
+                            onMouseEnter={() => handleMouseEnter(r, c)}
                             className={cn(
                               "w-12 h-12 rounded-full transition-all border-2 relative",
                               isUsed
