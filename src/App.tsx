@@ -205,19 +205,36 @@ export default function App() {
     }
   };
 
+  // NEW: Handle touch move for mobile
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (isEditing || !isDragging) return;
+    // Prevent scrolling while dragging on the grid
+    if (e.cancelable) e.preventDefault(); 
+
+    const touch = e.touches[0];
+    const element = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    if (element) {
+      // Find closest cell if we are over the text or the div
+      const cell = element.closest('[data-row]');
+      if (cell) {
+        const r = parseInt(cell.getAttribute('data-row') || '-1');
+        const c = parseInt(cell.getAttribute('data-col') || '-1');
+        if (r >= 0 && c >= 0) {
+          handleMouseEnter(r, c);
+        }
+      }
+    }
+  };
+
   const handleMouseUp = () => {
     if (isEditing) return;
     setIsDragging(false);
     
     // Check if word is valid
     const word = selectedCells.map(p => grid[p.row][p.col]).join('');
-    // Check if it's in the foundWords list (or just valid in dictionary?)
-    // Strands usually requires it to be one of the theme words, but here we accept any valid dictionary word?
-    // The prompt says: "When I get a correct answer...". 
-    // Let's assume if it is in the foundWords list, it's correct.
     
     const isValid = foundWords.some(fw => fw.word === word);
-    // Alternatively, check dictionary directly if we want to allow words not found by solver (unlikely if solver is complete)
     
     if (isValid) {
       const newUsed = new Set(usedCells);
@@ -230,8 +247,6 @@ export default function App() {
     setLastSelected(null);
   };
   
-  // Also support clicking a word in the list to "find" it automatically?
-  // "give possible words...". Maybe clicking them highlights them?
   const highlightWord = (fw: FoundWord) => {
       setHighlightedPath([]);
       setHoveredWord(null);
@@ -263,7 +278,11 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-8 font-sans text-gray-900" onMouseUp={handleMouseUp}>
+    <div 
+      className="min-h-screen bg-gray-100 p-8 font-sans text-gray-900" 
+      onMouseUp={handleMouseUp}
+      onTouchEnd={handleMouseUp} // Mobile Touch End
+    >
       <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
         
         {/* Left Column: Controls & Grid */}
@@ -409,8 +428,9 @@ export default function App() {
                   </svg>
 
                   <div
-                    className="absolute inset-0 grid gap-2 select-none z-20"
+                    className="absolute inset-0 grid gap-2 select-none z-20 touch-none" // Added touch-none to prevent scrolling
                     style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                    onTouchMove={handleTouchMove} // Mobile Drag Logic
                   >
                     {grid.map((row, r) => (
                       row.map((char, c) => {
@@ -422,12 +442,19 @@ export default function App() {
                         return (
                           <div
                             key={id}
+                            data-row={r} // Data attributes for touch ID
+                            data-col={c}
                             ref={el => {
                               if (el) cellRefs.current.set(id, el);
                               else cellRefs.current.delete(id);
                             }}
                             onMouseDown={() => handleMouseDown(r, c)}
                             onMouseEnter={() => handleMouseEnter(r, c)}
+                            onTouchStart={(e) => {
+                              // Prevent default to stop potential scrolling on start
+                              if(e.cancelable) e.preventDefault(); 
+                              handleMouseDown(r, c);
+                            }}
                             className={cn(
                               "w-12 h-12 flex items-center justify-center text-xl font-bold rounded-full transition-all cursor-pointer relative border-2 border-transparent",
                               !isUsed && "hover:border-blue-300",
@@ -451,7 +478,7 @@ export default function App() {
              {!dictionaryLoaded ? (
                  <span>Loading dictionary... {loadingError}</span>
              ) : (
-                 <span>Dictionary loaded. {isEditing ? "Edit grid and click Done." : "Drag to connect letters."}</span>
+                 <span>Dictionary loaded. {isEditing ? "Edit grid and click Done." : "Drag or touch to connect letters."}</span>
              )}
           </div>
         </div>
